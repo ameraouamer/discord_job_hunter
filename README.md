@@ -65,14 +65,14 @@ Everything you'd want to tweak is in the `REPLACE` block at the top of `job_rada
 
 Each run saves `seen_jobs.json` back to the repo, so jobs are never posted twice.
 
-## 🧠 How it works
+##  How it works
 
 1. Fetches listings from each source. APIs and RSS feeds are read directly.
 2. Filters by title and drops anything already in `seen_jobs.json`.
 3. Posts each new job to Discord through the webhook, with automatic retry if Discord rate-limits.
 4. Saves the updated list of seen jobs.
 
-## 📁 Project structure
+##  Project structure
 
 ```
 ├── job_radar.py                 # the whole bot
@@ -82,7 +82,7 @@ Each run saves `seen_jobs.json` back to the repo, so jobs are never posted twice
 └── seen_jobs.json               # jobs already posted (created automatically)
 ```
 
-## 🛣️ Ideas for later
+##  Ideas for later
 
 - Add more sources (company career pages, Welcome to the Jungle, Wellfound)
 - Per-source Discord channels
