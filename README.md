@@ -2,11 +2,10 @@
 
 **Stop refreshing job boards. Let new jobs come to your Discord.**
 
-Job Radar is a small Python bot that watches LinkedIn and other popular job sites for the roles you care about, then posts every new listing as a clean link in a Discord channel of your choice. It runs for free on GitHub Actions, so there's no server to rent or keep alive.
+Job Radar is a small Python bot that watches  popular job sites for the roles you care about, then posts every new listing as a clean link in a Discord channel of your choice. It runs for free on GitHub Actions, so there's no server to rent or keep alive.
 
 ## ✨ Features
 
-- **Five sources in one feed:** LinkedIn, Remote OK, We Work Remotely, Remotive and Arbeitnow
 - **Smart filters:** keep the roles you want (e.g. "machine learning", "AI") and drop the ones you don't (e.g. "senior", "lead")
 - **No duplicates:** remembers what it already posted in `seen_jobs.json`
 - **Won't flood your channel:** the first run posts at most 10 jobs, then only new ones
@@ -68,17 +67,10 @@ Each run saves `seen_jobs.json` back to the repo, so jobs are never posted twice
 
 ## 🧠 How it works
 
-1. Fetches listings from each source. APIs and RSS feeds are read directly, and LinkedIn's public guest search is parsed with Beautiful Soup.
+1. Fetches listings from each source. APIs and RSS feeds are read directly.
 2. Filters by title and drops anything already in `seen_jobs.json`.
 3. Posts each new job to Discord through the webhook, with automatic retry if Discord rate-limits.
 4. Saves the updated list of seen jobs.
-
-## ⚠️ Good to know
-
-- **LinkedIn has no official job API.** The bot reads its public guest search page, which can change without notice and throttles heavy use. Keep your keyword and location lists short. If LinkedIn blocks GitHub's servers, the other four sources keep working, and you can run the script from your own machine instead.
-- Scraping LinkedIn may go against its terms of service, so use it lightly and at your own risk.
-- Remotive is only checked every 6 hours, to respect its request to avoid frequent calls.
-- Never commit your webhook URL. Anyone who has it can post to your channel.
 
 ## 📁 Project structure
 
