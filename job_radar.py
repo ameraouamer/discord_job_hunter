@@ -25,10 +25,14 @@ load_dotenv()  # reads DISCORD_WEBHOOK_URL from a local .env file if present
 # (Channel Settings -> Integrations -> Webhooks -> New Webhook -> Copy URL).
 # Or leave it and set an environment variable named DISCORD_WEBHOOK_URL.
 <<<<<<< HEAD
+<<<<<<< HEAD
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip().strip("\"')")
 =======
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 >>>>>>> aa59033 (install requirements in workflow, track seen_jobs.json)
+=======
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip().strip("\"')")
+>>>>>>> ee9483b (sanitize webhook url)
 
 # REPLACE: the job titles you want LinkedIn to search for.
 LINKEDIN_KEYWORDS = [
