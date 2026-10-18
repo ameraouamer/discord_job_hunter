@@ -20,6 +20,9 @@ from pathlib import Path
 import feedparser
 import requests
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # =====================================================================
 #  1) REPLACE THESE (everything you need to edit is in this block)
@@ -28,7 +31,7 @@ from bs4 import BeautifulSoup
 # REPLACE: paste your Discord webhook URL between the quotes
 # (Channel Settings -> Integrations -> Webhooks -> New Webhook -> Copy URL).
 # Or leave it and set an environment variable named DISCORD_WEBHOOK_URL.
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "https://discordapp.com/api/webhooks/1561150668138487878/OY7W-VwfP7HT3yEsCaT6OmXANPUUuAyH25mUf0Nx9ly897wK2tdL1uApfVuzY4FRql2n")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "DISCORD_WEBHOOK_URL")
 
 # REPLACE: the job titles you want LinkedIn to search for.
 LINKEDIN_KEYWORDS = [
@@ -244,7 +247,7 @@ def run_once():
 
 
 if __name__ == "__main__":
-    if "PASTE_YOUR" in DISCORD_WEBHOOK_URL:
+    if not DISCORD_WEBHOOK_URL.startswith("https://discord"):
         sys.exit("Set DISCORD_WEBHOOK_URL first (see the REPLACE block at the top).")
     if "--once" in sys.argv:
         run_once()
