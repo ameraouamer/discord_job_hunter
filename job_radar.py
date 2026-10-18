@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
 """
 Job Radar: posts new job links to a Discord channel via webhook.
-
-Sources: LinkedIn (public guest search), Remote OK, We Work Remotely,
-Remotive, Arbeitnow (Europe).
-
-Install:  pip install requests beautifulsoup4 feedparser
-Run:      python job_radar.py          (loops forever)
-          python job_radar.py --once   (single pass, for cron / Task Scheduler)
 """
 
 import json
