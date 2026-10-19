@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
 """
 Job Radar: posts new job links to a Discord channel via webhook.
+
 """
 
 import json
@@ -15,7 +15,7 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv()  # reads DISCORD_WEBHOOK_URL from a local .env file if present
 
 # =====================================================================
 #  1) REPLACE THESE (everything you need to edit is in this block)
@@ -24,7 +24,7 @@ load_dotenv()
 # REPLACE: paste your Discord webhook URL between the quotes
 # (Channel Settings -> Integrations -> Webhooks -> New Webhook -> Copy URL).
 # Or leave it and set an environment variable named DISCORD_WEBHOOK_URL.
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "DISCORD_WEBHOOK_URL")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip().strip("\"')")
 
 # REPLACE: the job titles you want LinkedIn to search for.
 LINKEDIN_KEYWORDS = [
@@ -36,7 +36,7 @@ LINKEDIN_KEYWORDS = [
 LINKEDIN_LOCATIONS = [
     "Germany",
     "France",
-    "Europe",
+    "Netherlands",
     "United Arab Emirates",
     "Saudi Arabia",
 ]
@@ -50,6 +50,22 @@ TITLE_MUST_CONTAIN = [
 # ...and none of these.
 TITLE_MUST_NOT_CONTAIN = [
     "senior", "sr", "staff", "lead", "principal", "director", "head", "manager",
+    "architect", "consultant", "expert", "chief", "vp", "cto", "founding",
+    "product owner", "product engineer", "sales", "marketing", "ii", "iii", "iv",
+]
+
+# REPLACE: skip jobs whose description asks for more than this many years of
+# experience (works for English and German descriptions). Set to 99 to disable.
+MAX_YEARS_EXPERIENCE = 2
+
+# REPLACE: set to True to post ONLY jobs from the other sites that look
+# entry-level (title or description contains one of JUNIOR_WORDS).
+# Stricter, so you'll see far fewer jobs.
+REQUIRE_JUNIOR_SIGNAL = False
+JUNIOR_WORDS = [
+    "junior", "entry level", "entry-level", "graduate", "intern", "internship",
+    "working student", "werkstudent", "trainee", "praktikum", "berufseinsteiger",
+    "early career", "associate",
 ]
 
 # Turn a source off by setting it to False.
@@ -76,8 +92,8 @@ MIN_MINUTES = {"remotive": 360, "linkedin": 0, "remoteok": 0,
                "weworkremotely": 0, "arbeitnow": 0}
 
 
-def job(id_, title, company, location, url, source):
-    return {"id": f"{source}:{id_}", "title": title.strip(),
+def job(id_, title, company, location, url, source, desc=""):
+    return {"id": f"{source}:{id_}", "title": title.strip(), "desc": desc or "",
             "company": (company or "Unknown").strip(),
             "location": (location or "Not specified").strip(),
             "url": url, "source": source}
@@ -119,7 +135,8 @@ def fetch_linkedin():
 def fetch_remoteok():
     data = requests.get("https://remoteok.com/api", headers=UA, timeout=20).json()
     return [job(j["id"], j.get("position", ""), j.get("company"),
-                j.get("location") or "Remote", j["url"], "RemoteOK")
+                j.get("location") or "Remote", j["url"], "RemoteOK",
+                j.get("description", ""))
             for j in data if isinstance(j, dict) and j.get("id")]
 
 
@@ -140,7 +157,8 @@ def fetch_remotive():
         r = requests.get("https://remotive.com/api/remote-jobs",
                          params={"search": q}, headers=UA, timeout=20).json()
         out += [job(j["id"], j["title"], j["company_name"],
-                    j.get("candidate_required_location"), j["url"], "Remotive")
+                    j.get("candidate_required_location"), j["url"], "Remotive",
+                    j.get("description", ""))
                 for j in r.get("jobs", [])]
     return out
 
@@ -150,7 +168,8 @@ def fetch_arbeitnow():
                      headers=UA, timeout=20).json()
     return [job(j["slug"], j["title"], j["company_name"],
                 "Remote" if j.get("remote") else j.get("location"),
-                j["url"], "Arbeitnow") for j in r.get("data", [])]
+                j["url"], "Arbeitnow", j.get("description", ""))
+            for j in r.get("data", [])]
 
 
 SOURCES = {"linkedin": fetch_linkedin, "remoteok": fetch_remoteok,
@@ -164,12 +183,35 @@ def word_match(words, text):
     return any(re.search(rf"\b{re.escape(w)}\b", text, re.I) for w in words)
 
 
+EXP_RE = re.compile(
+    r"(?:(\d{1,2})\s*(?:-|–|to)\s*)?(\d{1,2})\s*\+?\s*(?:years?|yrs?|jahre?n?)\b"
+    r"[^.\n]{0,40}?(?:experience|erfahrung)", re.I)
+
+
+def plain(html):
+    return BeautifulSoup(html or "", "html.parser").get_text(" ")
+
+
+def too_experienced(text):
+    for m in EXP_RE.finditer(text):
+        if int(m.group(1) or m.group(2)) > MAX_YEARS_EXPERIENCE:
+            return True
+    return False
+
+
 def wanted(j):
     if word_match(TITLE_MUST_NOT_CONTAIN, j["title"]):
         return False
     if j["source"] == "LinkedIn":      # already filtered by the search itself
         return True
-    return word_match(TITLE_MUST_CONTAIN, j["title"])
+    if not word_match(TITLE_MUST_CONTAIN, j["title"]):
+        return False
+    text = plain(j["desc"])
+    if too_experienced(text):
+        return False
+    if REQUIRE_JUNIOR_SIGNAL and not word_match(JUNIOR_WORDS, j["title"] + " " + text):
+        return False
+    return True
 
 
 def load_state():
@@ -241,7 +283,7 @@ def run_once():
 
 if __name__ == "__main__":
     if not DISCORD_WEBHOOK_URL.startswith("https://discord"):
-        sys.exit("Set DISCORD_WEBHOOK_URL first (see the REPLACE block at the top).")
+        sys.exit("DISCORD_WEBHOOK_URL is missing or invalid (set it in .env or as an environment variable).")
     if "--once" in sys.argv:
         run_once()
     else:
