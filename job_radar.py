@@ -49,7 +49,6 @@ LINKEDIN_KEYWORDS = [
 LINKEDIN_SEARCHES = [
     ("Worldwide", True),
     ("Europe", True),
-    ("Middle East", True),
     ("Algeria", False),                 # Algerian companies / startups
     ("Germany", False),                 # on-site countries: we add "visa sponsorship"
     ("Netherlands", False),
