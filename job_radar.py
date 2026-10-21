@@ -61,6 +61,24 @@ LINKEDIN_SEARCHES = [
 ]
 LINKEDIN_VISA_SUFFIX = " visa sponsorship"   # added to on-site (non-Algeria) searches
 
+# ---- Role categories ----------------------------------------------------
+# Used to mix role types in every batch of posts (so AI/ML can't take all the
+# slots). The first matching category wins, so keep the order.
+CATEGORIES = {
+    "WordPress": ["wordpress"],
+    "Security": ["security", "cybersecurity", "cyber", "pentest", "penetration",
+                 "soc", "devsecops", "infosec", "sécurité", "securite", "cybersécurité"],
+    "Mobile": ["mobile", "android", "ios", "flutter", "react native", "kotlin", "swift"],
+    "AI/ML": ["machine learning", "ml", "ai", "data scientist", "data science", "nlp",
+              "llm", "deep learning", "computer vision", "mlops",
+              "intelligence artificielle"],
+    "Data": ["data analyst", "data engineer", "analytics", "business intelligence",
+             "bi", "data", "données", "donnees"],
+    "Web": ["web", "frontend", "front-end", "front end", "backend", "back-end",
+            "back end", "full stack", "fullstack", "full-stack", "php", "laravel",
+            "react", "vue", "node", "django"],
+}
+
 # ---- Title filters for the other sites --------------------------------
 # A job is posted if its title contains one of these...
 TITLE_MUST_CONTAIN = [
@@ -116,6 +134,9 @@ VISA_WORDS = [
     "work permit", "blue card", "we sponsor", "visa support", "visa provided",
     "relocate", "umzug", "visum",
 ]
+# The 🌍 badge is shown only when a remote job's location says one of these.
+WORLDWIDE_WORDS = ["worldwide", "anywhere", "global", "anywhere in the world",
+                   "work from anywhere"]
 # Sources where a job is only worth posting if it is remote OR mentions visa/relocation
 # (these are mostly on-site jobs in one country).
 NEEDS_REMOTE_OR_VISA = {"Arbeitnow"}
@@ -181,18 +202,38 @@ VISA_RE = WORD_RE(VISA_WORDS)
 REMOTE_RE = re.compile(r"remote|anywhere|worldwide|télétravail|teletravail|home ?office", re.I)
 
 
-def job(id_, title, company, location, url, source, desc=""):
+def word_match(words, text):
+    return any(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", text, re.I) for w in words)
+
+
+def categorize(*texts):
+    """Role category of the first text that matches (e.g. keyword, then title)."""
+    for text in texts:
+        for cat, words in CATEGORIES.items():
+            if word_match(words, text):
+                return cat
+    return "Other"
+
+
+def job(id_, title, company, location, url, source, desc="", cat="",
+        remote_hint=False):
+    """remote_hint=True means 'came from a remote-only search' (not verified)."""
     location = (location or "Not specified").strip()
     tags = []
     if source in REMOTE_SOURCES or REMOTE_RE.search(f"{location} {title}"):
         tags.append("remote")
+        if word_match(WORLDWIDE_WORDS, location):
+            tags.append("worldwide")
+    elif remote_hint:
+        tags.append("remote?")
     if desc and VISA_RE.search(desc):
         tags.append("visa")
     if source in LENIENT_SOURCES or "algeria" in location.lower():
         tags.append("dz")
     return {"id": f"{source}:{id_}", "title": title.strip(), "desc": desc or "",
             "company": (company or "Unknown").strip(), "location": location,
-            "url": url, "source": source, "tags": tags}
+            "url": url, "source": source, "tags": tags,
+            "cat": cat or categorize(title)}
 
 
 # ---------------------------- sources -------------------------------
@@ -229,9 +270,10 @@ def fetch_linkedin():
                     url = a["href"].split("?")[0]
                     jid = url.rstrip("/").split("-")[-1]
                     place = l.get_text() if l else loc
-                    j = job(jid, t.get_text(), c.get_text() if c else "",
-                            ("Remote · " + place) if remote_only else place,
-                            url, "LinkedIn")
+                    title = t.get_text()
+                    j = job(jid, title, c.get_text() if c else "", place,
+                            url, "LinkedIn", cat=categorize(kw, title),
+                            remote_hint=remote_only)
                     if not remote_only and loc != "Algeria":
                         j["tags"].append("visa?")   # found via a visa-sponsorship search
                     out.append(j)
@@ -258,7 +300,8 @@ def fetch_algeria():
                     if len(title) < 6 or not re.search(href_re, href):
                         continue
                     jid = href.split("?")[0].rstrip("/")
-                    out.append(job(jid, title, "", "Algeria", href, name))
+                    out.append(job(jid, title, "", "Algeria", href, name,
+                                   cat=categorize(title, q)))
                     found += 1
             except requests.RequestException as e:
                 print(f"  {name} error:", e)
@@ -324,10 +367,6 @@ SOURCES = {"linkedin": fetch_linkedin, "algeria": fetch_algeria,
 
 # ---------------------------- logic ---------------------------------
 
-def word_match(words, text):
-    return any(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", text, re.I) for w in words)
-
-
 EXP_RE = re.compile(
     r"(?:(\d{1,2})\s*(?:-|–|to|à)\s*)?(\d{1,2})\s*\+?\s*(?:years?|yrs?|jahre?n?|ans)\b"
     r"[^.\n]{0,40}?(?:experience|expérience|erfahrung)", re.I)
@@ -383,7 +422,22 @@ def wanted(j):
 
 def priority(j):
     t = j["tags"]
-    return 2 * ("visa" in t) + 2 * ("remote" in t) + 2 * ("dz" in t) + ("visa?" in t)
+    return (2 * ("visa" in t) + 2 * ("remote" in t) + 2 * ("dz" in t)
+            + ("visa?" in t) + ("remote?" in t))
+
+
+def pick_diverse(jobs, limit):
+    """Round-robin over role categories so one type can't take every slot.
+    `jobs` must already be sorted best-first; order is kept inside a category."""
+    buckets = {}
+    for j in jobs:
+        buckets.setdefault(j["cat"], []).append(j)
+    picked = []
+    while len(picked) < limit and any(buckets.values()):
+        for cat in list(buckets):
+            if buckets[cat] and len(picked) < limit:
+                picked.append(buckets[cat].pop(0))
+    return picked
 
 
 def load_state():
@@ -398,19 +452,22 @@ def save_state(state):
 
 
 def post(j):
-    badges = []
-    if "remote" in j["tags"]:
-        badges.append("🌍 Remote")
-    if "visa" in j["tags"]:
+    t = j["tags"]
+    badges = [f"🏷 {j['cat']}"]
+    if "remote" in t:
+        badges.append("🌍 Worldwide remote" if "worldwide" in t else "🏠 Remote")
+    elif "remote?" in t:
+        badges.append("🏠 Remote (LinkedIn filter)")
+    if "visa" in t:
         badges.append("🛂 Visa/relocation")
-    elif "visa?" in j["tags"]:
+    elif "visa?" in t:
         badges.append("🛂 Visa search")
-    if "dz" in j["tags"]:
+    if "dz" in t:
         badges.append("🇩🇿 Algeria")
     msg = (f"**{j['title']}**\n"
            f"🏢 {j['company']}  ·  📍 {j['location']}  ·  _{j['source']}_\n"
-           + (" · ".join(badges) + "\n" if badges else "")
-           + f"{j['url']}")
+           f"{' · '.join(badges)}\n"
+           f"{j['url']}")
     while True:
         r = requests.post(DISCORD_WEBHOOK_URL, timeout=15,
                           json={"content": msg, "username": "Job Radar"})
@@ -432,8 +489,11 @@ def run_once():
             continue
         print(f"Checking {name}...")
         try:
-            found += fn()
+            items = fn()
+            found += items
             state["last"][name] = time.time()
+            ok = sum(1 for j in items if wanted(j))
+            print(f"  {name}: {len(items)} fetched, {ok} pass the filters")
         except Exception as e:
             print(f"  {name} failed: {e}")
 
@@ -445,13 +505,18 @@ def run_once():
         new.append(j)
 
     new.sort(key=priority, reverse=True)   # remote / visa / Algerian first
+    by_cat = {}
+    for j in new:
+        by_cat[j["cat"]] = by_cat.get(j["cat"], 0) + 1
+    print(f"{len(found)} fetched in total, {len(new)} new after filters and dedupe: {by_cat}")
 
     if state.get("first_run"):
-        to_post = new[:FIRST_RUN_LIMIT]    # avoid flooding the channel at start
+        to_post = pick_diverse(new, FIRST_RUN_LIMIT)   # avoid flooding at start
         state["first_run"] = False
-        skipped = [j["id"] for j in new if j not in to_post]   # mark as seen
+        chosen = {j["id"] for j in to_post}
+        skipped = [j["id"] for j in new if j["id"] not in chosen]  # mark as seen
     else:
-        to_post = new[:MAX_POSTS_PER_RUN]  # the rest stay unseen -> next run
+        to_post = pick_diverse(new, MAX_POSTS_PER_RUN)  # the rest wait for next run
         skipped = []
 
     posted = set()
