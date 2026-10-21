@@ -5,6 +5,7 @@ Roles: AI/ML, data, mobile, web, WordPress, security.
 Focus: remote jobs, relocation / visa-sponsored jobs, and Algerian companies.
 """
 
+import html
 import json
 import os
 import re
@@ -31,32 +32,25 @@ LINKEDIN_KEYWORDS = [
     # AI / data
     "junior machine learning engineer",
     "junior AI engineer",
-    "junior data scientist",
     "junior data analyst",
-    "junior data engineer",
     # mobile / web / wordpress
     "junior mobile developer",
-    "junior flutter developer",
     "junior web developer",
-    "junior full stack developer",
     "junior wordpress developer",
     # security
     "junior cybersecurity analyst",
-    "junior security engineer",
 ]
 
 # (location, remote_only). Remote-only searches use LinkedIn's "Remote" filter.
+# Keep this list short: every keyword x place is one request plus a pause.
+# More ideas: ("Middle East", True), ("Netherlands", False), ("Ireland", False),
+#             ("Canada", False), ("United Kingdom", False), ("Qatar", False)
 LINKEDIN_SEARCHES = [
     ("Worldwide", True),
     ("Europe", True),
     ("Algeria", False),                 # Algerian companies / startups
     ("Germany", False),                 # on-site countries: we add "visa sponsorship"
-    ("Netherlands", False),
-    ("Ireland", False),
-    ("Canada", False),
-    ("United Kingdom", False),
     ("United Arab Emirates", False),
-    ("Qatar", False),
 ]
 LINKEDIN_VISA_SUFFIX = " visa sponsorship"   # added to on-site (non-Algeria) searches
 
@@ -126,13 +120,13 @@ JUNIOR_WORDS = [
 ]
 
 # ---- Remote / visa focus ----------------------------------------------
-# Words in a description that suggest relocation help or visa sponsorship.
-VISA_WORDS = [
-    "visa sponsorship", "visa sponsor", "sponsor visa", "sponsorship",
-    "relocation", "relocation package", "relocation support", "relocation assistance",
-    "work permit", "blue card", "we sponsor", "visa support", "visa provided",
-    "relocate", "umzug", "visum",
-]
+# Visa / relocation detection is automatic (see SPONSOR_RE and RELOC_RE below).
+# It looks for real offers such as "visa sponsorship" or "relocation package" in
+# the job description, and ignores negated ones ("we cannot sponsor visas") and
+# candidate requirements ("must be willing to relocate").
+# LinkedIn search results have no description, so the bot opens the page of each
+# new LinkedIn job to check. How many per run (each costs about 1.5 s):
+LINKEDIN_DETAIL_LIMIT = 30
 # The 🌍 badge is shown only when a remote job's location says one of these.
 WORLDWIDE_WORDS = ["worldwide", "anywhere", "global", "anywhere in the world",
                    "work from anywhere"]
@@ -181,7 +175,7 @@ ENABLE = {
 }
 
 CHECK_EVERY_MINUTES = 30
-LINKEDIN_MAX_AGE_HOURS = 24
+LINKEDIN_MAX_AGE_HOURS = 2     # overlaps the hourly schedule on purpose; dedupe handles repeats
 FIRST_RUN_LIMIT = 10          # on the very first run, post at most this many
 MAX_POSTS_PER_RUN = 25        # later runs: the rest wait for the next run
 
@@ -192,17 +186,55 @@ MAX_POSTS_PER_RUN = 25        # later runs: the rest wait for the next run
 STATE_FILE = Path(__file__).with_name("seen_jobs.json")
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) JobRadar/1.0"}
 MIN_MINUTES = {"remotive": 360, "linkedin": 0, "remoteok": 0,
-               "weworkremotely": 0, "arbeitnow": 0, "algeria": 60}
+               "weworkremotely": 0, "arbeitnow": 0, "algeria": 50}
 REMOTE_SOURCES = {"RemoteOK", "WeWorkRemotely", "Remotive"}
 
-WORD_RE = lambda words: re.compile(  # noqa: E731
-    r"(?<!\w)(?:" + "|".join(re.escape(w) for w in words) + r")(?!\w)", re.I)
-VISA_RE = WORD_RE(VISA_WORDS)
+SPONSOR_RE = re.compile(
+    r"visa\s+sponsor\w*"
+    r"|sponsor\w*\s+(?:a\s+|your\s+|the\s+|work\s+)?visas?"
+    r"|visa\s+(?:support|assistance|provided)"
+    r"|work\s+permit\s+(?:support|sponsorship|assistance|provided)"
+    r"|blue\s+card"
+    r"|sponsorship\s+(?:is\s+)?(?:available|provided|offered)"
+    r"|\bvisum\b", re.I)
+RELOC_RE = re.compile(
+    r"relocation\s+(?:package|support|assistance|bonus|allowance|budget|help|expenses"
+    r"|benefits?|stipend|services?|available|offered|provided|included|covered"
+    r"|reimbursement)"
+    r"|(?:offer|offers|offering|provide|provides|providing|include|includes|including"
+    r"|paid|covered)\s+(?:\w+\s+)?relocation"
+    r"|(?:help|assist|assists|support|supports)\w*\s+(?:you\s+)?(?:with\s+|in\s+|to\s+)?"
+    r"(?:your\s+)?relocat\w*"
+    r"|relocation\s+(?:and|&)\s+visa|visa\s+(?:and|&)\s+relocation"
+    r"|umzugs\w*(?:hilfe|zuschuss|unterstützung|kosten)\w*"
+    r"|relocation-?(?:paket|support)", re.I)
+# A sentence containing one of these is not treated as an offer.
+NEG_RE = re.compile(
+    r"\b(?:no|not|cannot|unable|without|never|unfortunately|kein\w*|nicht|ohne)\b"
+    r"|n['’]t\b", re.I)
 REMOTE_RE = re.compile(r"remote|anywhere|worldwide|télétravail|teletravail|home ?office", re.I)
 
 
 def word_match(words, text):
     return any(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", text, re.I) for w in words)
+
+
+def html_lines(markup):
+    """HTML -> text, one line per block, so a negation stays in its own sentence."""
+    return html.unescape(re.sub(r"<[^>]+>", "\n", markup or ""))
+
+
+def visa_signals(text):
+    """{'visa', 'reloc'} for offers found in sentences that are not negated."""
+    found = set()
+    for sentence in re.split(r"[.\n;!?•]+", text):
+        if NEG_RE.search(sentence):
+            continue
+        if SPONSOR_RE.search(sentence):
+            found.add("visa")
+        if RELOC_RE.search(sentence):
+            found.add("reloc")
+    return found
 
 
 def categorize(*texts):
@@ -225,8 +257,8 @@ def job(id_, title, company, location, url, source, desc="", cat="",
             tags.append("worldwide")
     elif remote_hint:
         tags.append("remote?")
-    if desc and VISA_RE.search(desc):
-        tags.append("visa")
+    if desc:
+        tags += sorted(visa_signals(html_lines(desc)))
     if source in LENIENT_SOURCES or "algeria" in location.lower():
         tags.append("dz")
     return {"id": f"{source}:{id_}", "title": title.strip(), "desc": desc or "",
@@ -280,6 +312,49 @@ def fetch_linkedin():
                 print("  linkedin error:", e)
             time.sleep(2.5)  # be polite, LinkedIn throttles quickly
     return out
+
+
+def linkedin_description(jid):
+    """Job description HTML from LinkedIn's public job page (None if missing)."""
+    r = requests.get(f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{jid}",
+                     headers=UA, timeout=20)
+    if r.status_code == 429:
+        raise RuntimeError("throttled")
+    if r.status_code != 200:
+        return None
+    soup = BeautifulSoup(r.text, "html.parser")
+    box = (soup.select_one(".show-more-less-html__markup")
+           or soup.select_one(".description__text"))
+    return str(box) if box else None
+
+
+def enrich_linkedin(jobs):
+    """Check visa / relocation (and years of experience) on new LinkedIn jobs.
+    Returns (kept_jobs, ids_of_jobs_dropped_for_experience)."""
+    kept, dropped, checked, verified = [], [], 0, 0
+    for j in jobs:
+        if j["source"] == "LinkedIn" and checked < LINKEDIN_DETAIL_LIMIT:
+            checked += 1
+            try:
+                desc = linkedin_description(j["id"].split(":", 1)[1])
+            except (RuntimeError, requests.RequestException) as e:
+                print("  linkedin details stopped:", e)
+                checked = LINKEDIN_DETAIL_LIMIT      # stop asking this run
+                desc = None
+            time.sleep(1.5)
+            if desc:
+                verified += 1
+                j["desc"] = desc
+                if too_experienced(plain(desc)):
+                    dropped.append(j["id"])
+                    continue
+                found = visa_signals(html_lines(desc))
+                j["tags"] = [t for t in j["tags"]
+                             if t not in ("visa?", "visa", "reloc")] + sorted(found)
+        kept.append(j)
+    print(f"  checked the description of {verified} LinkedIn job(s), "
+          f"dropped {len(dropped)} asking for too much experience")
+    return kept, dropped
 
 
 def fetch_algeria():
@@ -414,15 +489,15 @@ def wanted(j):
     if j["source"] in REMOTE_SOURCES and location_blocked(j["location"]):
         return False
     if j["source"] in NEEDS_REMOTE_OR_VISA and not (
-            "remote" in j["tags"] or "visa" in j["tags"]):
+            "remote" in j["tags"] or "visa" in j["tags"] or "reloc" in j["tags"]):
         return False
     return True
 
 
 def priority(j):
     t = j["tags"]
-    return (2 * ("visa" in t) + 2 * ("remote" in t) + 2 * ("dz" in t)
-            + ("visa?" in t) + ("remote?" in t))
+    return (2 * ("visa" in t) + 2 * ("reloc" in t) + 2 * ("remote" in t)
+            + 2 * ("dz" in t) + ("visa?" in t) + ("remote?" in t))
 
 
 def pick_diverse(jobs, limit):
@@ -458,9 +533,11 @@ def post(j):
     elif "remote?" in t:
         badges.append("🏠 Remote (LinkedIn filter)")
     if "visa" in t:
-        badges.append("🛂 Visa/relocation")
+        badges.append("🛂 Visa sponsorship")
     elif "visa?" in t:
-        badges.append("🛂 Visa search")
+        badges.append("🛂 Visa search (unverified)")
+    if "reloc" in t:
+        badges.append("✈️ Relocation support")
     if "dz" in t:
         badges.append("🇩🇿 Algeria")
     msg = (f"**{j['title']}**\n"
@@ -503,6 +580,8 @@ def run_once():
         ids.add(j["id"])
         new.append(j)
 
+    new.sort(key=priority, reverse=True)   # best candidates get checked first
+    new, dropped = enrich_linkedin(new)    # verify visa / relocation on LinkedIn jobs
     new.sort(key=priority, reverse=True)   # remote / visa / Algerian first
     by_cat = {}
     for j in new:
@@ -526,7 +605,7 @@ def run_once():
             time.sleep(1)
         except requests.RequestException as e:
             print("  Discord error:", e)   # not marked seen -> retried next time
-    state["seen"] += list(posted) + skipped
+    state["seen"] += list(posted) + skipped + dropped
     save_state(state)
     print(f"Done. Posted {len(posted)} new job(s); {len(new) - len(to_post)} waiting.")
 

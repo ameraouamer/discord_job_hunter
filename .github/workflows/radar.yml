@@ -1,4 +1,5 @@
 name: Job Radar
+
 on:
   schedule:
      - cron: "17 * * * *"   # every hour, at minute 17
@@ -8,22 +9,44 @@ permissions:
 concurrency:
   group: job-radar
   cancel-in-progress: false
+
+    - cron: "17 * * * *"   # every hour, at minute 17
+  workflow_dispatch:        # lets you run it manually from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:               # never run two at once
+  group: job-radar
+  cancel-in-progress: false
+
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+
       - run: pip install -r requirements.txt
+
       - run: python job_radar.py --once
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
       - name: Save seen jobs
         run: |
           git config user.name "job-radar"
           git config user.email "job-radar@users.noreply.github.com"
           git add seen_jobs.json
           git diff --cached --quiet || git commit -m "update seen jobs"
+<<<<<<< HEAD
           git push
+=======
+          git pull --rebase
+          git push
+>>>>>>> 0c1690c (edited lunch loop , concurrency , regions and linked in searches)
