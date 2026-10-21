@@ -1,10 +1,13 @@
 name: Job Radar
 on:
   schedule:
-    - cron: "17 */2 * * *"   # every 2 hours
+     - cron: "17 * * * *"   # every hour, at minute 17
   workflow_dispatch:          # lets you run it manually
 permissions:
   contents: write
+concurrency:
+  group: job-radar
+  cancel-in-progress: false
 jobs:
   run:
     runs-on: ubuntu-latest
