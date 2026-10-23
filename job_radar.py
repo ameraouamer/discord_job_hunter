@@ -154,7 +154,7 @@ RESTRICT_RE = re.compile(
 # Specific countries: if a job is in Germany/Netherlands/etc., it is NOT remote for Algeria
 # unless it explicitly offers visa/relocation.
 LOCAL_COUNTRY_RE = re.compile(
-    r"\b(?:germany|deutschland|netherlands|ireland|france|uk|united kingdom|usa?|united states|canada|australia|switzerland|austria|spain|italy|poland)\b", re.I)
+    r"\b(?:germany|deutschland|netherlands|ireland|france|uk|united kingdom|england|scotland|wales|usa?|united states|canada|australia|switzerland|austria|spain|italy|poland|india|brazil|mexico|singapore)\b", re.I)
 
 EXP_RE = re.compile(
     r"(?:(\d{1,2})\s*(?:-|–|to|à)\s*)?(\d{1,2})\s*\+?\s*(?:years?|yrs?|jahre?n?|ans)\b"
@@ -460,7 +460,6 @@ def run_once():
     # 4) Post the best candidates to Discord
     good.sort(key=score, reverse=True)
     to_post = good[:MAX_POSTS_PER_RUN]
-    done -= {j["id"] for j in good[MAX_POSTS_PER_RUN:]}  # surplus wait for next run
     posted = 0
     for j in to_post:
         try:
@@ -470,7 +469,7 @@ def run_once():
         except requests.RequestException as e:
             code = getattr(e.response, "status_code", None)
             print("  Discord error:", code or type(e).__name__)
-            done.discard(j["id"])  # retry next run
+            done.discard(j["id"])  # retry failed Discord post next run
     save_seen(seen | done)
     print(f"Done. {len(candidates)} new candidates, {len(good)} passed the quality check, {posted} posted.")
 
