@@ -2,13 +2,18 @@ name: Job Radar
 
 on:
   schedule:
-    - cron: "17 * * * *" # Every hour, at minute 17
-  workflow_dispatch: # Allow manual execution
+    - cron: "17 * * * *"   # every hour, at minute 17
+  workflow_dispatch:        # lets you run it manually from the Actions tab
+    inputs:
+      test:
+        description: "Only send a test message to Discord"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
-concurrency:
+concurrency:               # never run two at once
   group: job-radar
   cancel-in-progress: false
 
@@ -16,11 +21,8 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -29,16 +31,24 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Run Job Radar
+      - name: Send a test message
+        if: ${{ inputs.test }}
+        run: python job_radar.py --test
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+      - name: Look for jobs
+        if: ${{ !inputs.test }}
         run: python job_radar.py --once
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
       - name: Save seen jobs
+        if: ${{ !inputs.test }}
         run: |
           git config user.name "job-radar"
           git config user.email "job-radar@users.noreply.github.com"
           git add seen_jobs.json
           git diff --cached --quiet || git commit -m "update seen jobs"
-          git pull --rebase origin master
-          git push origin master
+          git pull --rebase
+          git push

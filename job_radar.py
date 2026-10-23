@@ -604,15 +604,31 @@ def run_once():
             posted.add(j["id"])
             time.sleep(1)
         except requests.RequestException as e:
-            print("  Discord error:", e)   # not marked seen -> retried next time
+            code = getattr(e.response, "status_code", None)   # never print the URL
+            print("  Discord error:", code or type(e).__name__)  # retried next run
     state["seen"] += list(posted) + skipped + dropped
     save_state(state)
     print(f"Done. Posted {len(posted)} new job(s); {len(new) - len(to_post)} waiting.")
 
 
+def send_test():
+    """python job_radar.py --test  ->  sends one message and reports the result."""
+    try:
+        r = requests.post(DISCORD_WEBHOOK_URL, timeout=15,
+                          json={"content": "✅ Job Radar test message",
+                                "username": "Job Radar"})
+        print(f"Discord answered HTTP {r.status_code} "
+              "(204 = delivered; 401/404 = webhook URL is wrong or deleted)")
+        sys.exit(0 if r.status_code in (200, 204) else 1)
+    except requests.RequestException as e:
+        sys.exit(f"Could not reach Discord: {type(e).__name__}")
+
+
 if __name__ == "__main__":
     if not DISCORD_WEBHOOK_URL.startswith("https://discord"):
         sys.exit("DISCORD_WEBHOOK_URL is missing or invalid (set it in .env or as an environment variable).")
+    if "--test" in sys.argv:
+        send_test()
     if "--once" in sys.argv:
         run_once()
     else:
