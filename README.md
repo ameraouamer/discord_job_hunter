@@ -44,18 +44,16 @@ python job_radar.py          # check every 30 minutes, forever
 
 ## ⚙️ Configuration
 
-Everything you'd want to tweak is in the `REPLACE` block at the top of `job_radar.py`:
+Everything you'd want to tweak is in the edit block at the top of `job_radar.py`:
 
 | Setting | What it does |
 |---|---|
-| `LINKEDIN_KEYWORDS` | Job titles to search for on LinkedIn |
-| `LINKEDIN_LOCATIONS` | Countries or cities to search in |
-| `TITLE_MUST_CONTAIN` | Titles from the other sites must include one of these words |
-| `TITLE_MUST_NOT_CONTAIN` | Titles containing any of these words are skipped |
-| `ENABLE` | Turn individual sources on or off |
-| `CHECK_EVERY_MINUTES` | How often the loop runs |
-| `LINKEDIN_MAX_AGE_HOURS` | Only show LinkedIn jobs posted within this window |
-| `FIRST_RUN_LIMIT` | Maximum jobs posted on the very first run |
+| `ROLES` | Target junior tech roles to search |
+| `RELOCATION_COUNTRIES` | Target countries where jobs must offer relocation support or visa sponsorship |
+| `REMOTE_PLACES` | Target regions for remote jobs (e.g. Worldwide, Africa) |
+| `MAX_AGE_HOURS` | Only show fresh jobs posted in the last N hours so you can apply early |
+| `MAX_YEARS_EXPERIENCE` | Drop jobs asking for more years of experience (default: 2) |
+| `MAX_POSTS_PER_RUN` | Maximum jobs posted per run to avoid flooding |
 
 ## ☁️ Host it for free with GitHub Actions
 
