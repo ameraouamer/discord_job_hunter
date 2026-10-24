@@ -28,14 +28,16 @@ load_dotenv()  # reads DISCORD_WEBHOOK_URL from a local .env file if present
 
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip().strip("\"')")
 
-# Target junior roles to search
+# Target roles to search (senior roles filtered out automatically)
 ROLES = [
-    "junior machine learning engineer",
-    "junior AI engineer",
-    "junior data analyst",
-    "junior web developer",
-    "junior mobile developer",
-    "junior cybersecurity analyst",
+    "machine learning engineer",
+    "AI engineer",
+    "data analyst",
+    "web developer",
+    "frontend developer",
+    "backend developer",
+    "mobile developer",
+    "cybersecurity analyst",
 ]
 
 # Countries to search for relocation & visa sponsorship (on-site / hybrid)
@@ -282,7 +284,14 @@ def fetch_remoteok():
 
 def fetch_weworkremotely():
     out = []
-    categories = ("remote-programming-jobs", "remote-data-jobs", "remote-devops-sysadmin-jobs")
+    categories = (
+        "remote-programming-jobs",
+        "remote-full-stack-programming-jobs",
+        "remote-front-end-programming-jobs",
+        "remote-back-end-programming-jobs",
+        "remote-data-jobs",
+        "remote-devops-sysadmin-jobs",
+    )
     for slug in categories:
         try:
             feed = feedparser.parse(f"https://weworkremotely.com/categories/{slug}.rss")
@@ -297,6 +306,24 @@ def fetch_weworkremotely():
         except Exception as e:
             print(f"  weworkremotely {slug} error: {type(e).__name__}")
     return out
+
+
+def fetch_remotive():
+    try:
+        r = requests.get("https://remotive.com/api/remote-jobs", headers=UA, timeout=20)
+        if r.status_code != 200:
+            return []
+        data = r.json().get("jobs", [])
+        return [
+            make("Remotive", str(j["id"]), j.get("title", ""), j.get("company_name", ""),
+                 j.get("candidate_required_location") or "Worldwide", j.get("url", ""),
+                 j.get("description", ""), remote=True,
+                 posted=j.get("publication_date"))
+            for j in data if isinstance(j, dict) and j.get("id")
+        ]
+    except Exception as e:
+        print(f"  remotive error: {type(e).__name__}")
+        return []
 
 
 def fetch_arbeitnow():
@@ -321,8 +348,9 @@ def fetch_arbeitnow():
 
 SOURCES = {
     "linkedin": fetch_linkedin,
-    "remoteok": fetch_remoteok,
     "weworkremotely": fetch_weworkremotely,
+    "remotive": fetch_remotive,
+    "remoteok": fetch_remoteok,
     "arbeitnow": fetch_arbeitnow,
 }
 
@@ -338,12 +366,19 @@ def title_ok(j):
 
 
 def fresh(j):
-    if not j["posted"]:
+    if not j.get("posted"):
         return True
     try:
-        ts = float(j["posted"])
+        val = j["posted"]
+        if isinstance(val, (int, float)):
+            ts = float(val)
+        elif isinstance(val, str) and val.isdigit():
+            ts = float(val)
+        else:
+            from datetime import datetime
+            ts = datetime.fromisoformat(str(val).replace("Z", "+00:00")).timestamp()
         return time.time() - ts <= MAX_AGE_HOURS * 3600
-    except (ValueError, TypeError):
+    except Exception:
         return True
 
 
@@ -415,16 +450,17 @@ def post(j):
 
 def run_once():
     seen = load_seen()
+    print(f"Loaded {len(seen)} previously seen jobs.")
 
     # 1) Collect jobs from all sources
     jobs = []
     for name, fn in SOURCES.items():
         try:
             items = fn()
-            print(f"{name}: {len(items)} fetched")
+            print(f"[{name}] {len(items)} fetched")
             jobs += items
         except Exception as e:
-            print(f"{name} failed: {type(e).__name__}")
+            print(f"[{name}] failed: {type(e).__name__} - {e}")
 
     # 2) Cheap initial checks: not seen, good title, recently posted
     candidates, ids = [], set()
@@ -433,6 +469,7 @@ def run_once():
             continue
         ids.add(j["id"])
         candidates.append(j)
+    print(f"Candidates to inspect after title & freshness filters: {len(candidates)}")
 
     # 3) Quality check (LinkedIn opens job detail pages; others already have desc)
     done, good, opened = set(), [], 0
@@ -456,6 +493,8 @@ def run_once():
         if not too_experienced(j["desc"]) and qualifies(j):
             good.append(j)
 
+    print(f"Jobs passing quality filters (relocation/visa or remote Algeria): {len(good)}")
+
     # 4) Post the best candidates to Discord
     good.sort(key=score, reverse=True)
     to_post = good[:MAX_POSTS_PER_RUN]
@@ -464,14 +503,15 @@ def run_once():
         try:
             post(j)
             posted += 1
-            print(f"  Posted to Discord: {j['title']} ({j['company']})")
+            print(f"  [DISCORD POSTED] {j['title']} @ {j['company']} ({', '.join(j['flags'])})")
             time.sleep(1)
         except requests.RequestException as e:
             code = getattr(e.response, "status_code", None)
-            print("  Discord error:", code or type(e).__name__)
+            print(f"  [DISCORD ERROR] {code or type(e).__name__} posting {j['title']}")
             done.discard(j["id"])  # retry failed Discord post next run
+
     save_seen(seen | done)
-    print(f"Done. {len(candidates)} new candidates, {len(good)} passed the quality check, {posted} posted.")
+    print(f"Done. Evaluated {len(candidates)} new candidates, {len(good)} passed quality check, {posted} posted to Discord.")
 
 
 def send_test():
