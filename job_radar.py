@@ -44,16 +44,15 @@ RELOCATION_COUNTRIES = [
     "Netherlands",
     "Ireland",
     "United Arab Emirates",
-    "Qatar"
-    "USA",
-    "Europe",
-    "France"
+    "Qatar",
+    "United Kingdom",
+    "France",
 ]
 
 # Regions searched with LinkedIn's Remote filter (must be open to Algeria)
 REMOTE_PLACES = ["Worldwide", "Africa"]
 
-MAX_AGE_HOURS = 4           # only jobs posted in the last N hours (apply early)
+MAX_AGE_HOURS = 24          # only jobs posted in the last N hours (apply early)
 MAX_YEARS_EXPERIENCE = 2    # skip jobs asking for more years of experience (99 = off)
 MAX_POSTS_PER_RUN = 15      # max jobs sent to Discord per run
 LINKEDIN_DETAIL_LIMIT = 30  # LinkedIn job descriptions inspected per run (~1.5s each)
@@ -64,8 +63,8 @@ TITLE_KEYWORDS = [
     "deep learning", "data", "analytics", "mobile", "android", "ios", "flutter",
     "react native", "kotlin", "swift", "web", "frontend", "front-end", "backend",
     "back-end", "full stack", "fullstack", "full-stack", "wordpress", "php",
-    "laravel", "react", "vue", "node", "django", "security", "cybersecurity",
-    "cyber", "pentest", "devsecops",
+    "laravel", "react", "vue", "node", "django", "python", "software engineer",
+    "software developer", "security", "cybersecurity", "cyber", "pentest", "devsecops",
 ]
 
 # ...and must NEVER contain any of these senior/unrelated keywords.
@@ -87,7 +86,7 @@ BADGES = {
 # =====================================================================
 
 STATE_FILE = Path(__file__).with_name("seen_jobs.json")
-UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) JobRadar/1.0"}
+UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
 
 TITLE_KEYWORDS_RE = re.compile(
     r"\b(?:" + "|".join(re.escape(w) for w in TITLE_KEYWORDS) + r")\b", re.I)
@@ -129,7 +128,7 @@ NEG_RE = re.compile(
 
 # Locations acceptable for remote workers in Algeria
 OPEN_LOC_RE = re.compile(
-    r"\b(?:worldwide|anywhere|global|africa|algeria|mena)\b", re.I)
+    r"\b(?:worldwide|anywhere|global|africa|algeria|mena|emea)\b", re.I)
 
 # Descriptions explicitly confirming worldwide / Algeria remote work
 OPEN_DESC_RE = re.compile(
@@ -216,11 +215,11 @@ def fetch_linkedin():
     out = []
     for place, remote in searches:
         for role in ROLES:
-            query = role if remote else f"{role} visa sponsorship"
+            query = role if remote else f"{role} visa"
             params = {
                 "keywords": query,
                 "location": place,
-                "f_TPR": f"r{MAX_AGE_HOURS * 3600}",
+                "f_TPR": "r86400",
             }
             if remote:
                 params["f_WT"] = 2  # LinkedIn Remote filter
@@ -363,7 +362,7 @@ def qualifies(j):
     is_foreign_country = bool(LOCAL_COUNTRY_RE.search(loc)) and not bool(OPEN_LOC_RE.search(loc))
 
     if j["remote"] and not is_foreign_country:
-        is_open_location = bool(OPEN_LOC_RE.search(loc))
+        is_open_location = bool(OPEN_LOC_RE.search(loc)) or loc.lower().strip() in ("remote", "worldwide", "")
         is_open_desc = bool(OPEN_DESC_RE.search(text))
         is_restricted = bool(RESTRICT_RE.search(text)) or bool(RESTRICT_RE.search(loc))
 
@@ -465,6 +464,7 @@ def run_once():
         try:
             post(j)
             posted += 1
+            print(f"  Posted to Discord: {j['title']} ({j['company']})")
             time.sleep(1)
         except requests.RequestException as e:
             code = getattr(e.response, "status_code", None)
