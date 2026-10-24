@@ -1,3 +1,4 @@
 venv/
 __pycache__/
+seen_jobs.json
 .env

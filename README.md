@@ -89,4 +89,4 @@ Each run saves `seen_jobs.json` back to the repo, so jobs are never posted twice
 
 ---
 
-Built with Python, Beautiful Soup, and a healthy dislike of refreshing job boards.
+Built with Python, Beautiful Soup, and a healthy dislike of refreshing job boards. 

@@ -1,9 +1,5 @@
 """
 Job Radar: posts only high-quality, fresh jobs to a Discord channel.
-
-A job is posted only if it is recent, junior-friendly, AND at least one of these is true:
-  * Its description offers relocation support or visa sponsorship (for moving abroad)
-  * It is remote and genuinely open to people in Algeria (worldwide / Africa / EMEA ...)
 """
 
 import calendar
@@ -13,6 +9,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import feedparser
@@ -23,43 +20,34 @@ from dotenv import load_dotenv
 load_dotenv()  # reads DISCORD_WEBHOOK_URL from a local .env file if present
 
 # =====================================================================
-#  1) EDIT THESE (Clean & Simple Configuration)
+#  1) EDIT THESE
 # =====================================================================
 
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip().strip("\"')")
 
-# Target roles to search (senior roles filtered out automatically)
+# Roles to search (also used for Himalayas). Senior roles are filtered out below.
 ROLES = [
     "machine learning engineer",
     "AI engineer",
     "data analyst",
     "web developer",
-    "frontend developer",
-    "backend developer",
     "mobile developer",
     "cybersecurity analyst",
 ]
 
-# Countries to search for relocation & visa sponsorship (on-site / hybrid)
-RELOCATION_COUNTRIES = [
-    "Germany",
-    "Netherlands",
-    "Ireland",
-    "United Arab Emirates",
-    "Qatar",
-    "United Kingdom",
-    "France",
-]
+# LinkedIn, on-site / hybrid: searched together with "visa sponsorship"
+RELOCATION_COUNTRIES = ["Germany", "Netherlands", "Ireland", "United Arab Emirates",
+                        "Qatar", "United Kingdom", "France"]
 
-# Regions searched with LinkedIn's Remote filter (must be open to Algeria)
+# LinkedIn, remote: searched with LinkedIn's Remote filter
 REMOTE_PLACES = ["Worldwide", "Africa"]
 
-MAX_AGE_HOURS = 24          # only jobs posted in the last N hours (apply early)
+MAX_AGE_HOURS = 6           # only jobs posted in the last N hours (apply early)
 MAX_YEARS_EXPERIENCE = 2    # skip jobs asking for more years of experience (99 = off)
-MAX_POSTS_PER_RUN = 15      # max jobs sent to Discord per run
-LINKEDIN_DETAIL_LIMIT = 30  # LinkedIn job descriptions inspected per run (~1.5s each)
+MAX_POSTS_PER_RUN = 15      # extra jobs wait in a queue for the next run
+LINKEDIN_DETAIL_LIMIT = 40  # LinkedIn job pages opened per run (about 1.5 s each)
 
-# Other job boards: title must contain one of these keywords...
+# On the job boards, the title must contain one of these...
 TITLE_KEYWORDS = [
     "machine learning", "ml", "ai", "nlp", "llm", "mlops", "computer vision",
     "deep learning", "data", "analytics", "mobile", "android", "ios", "flutter",
@@ -68,34 +56,39 @@ TITLE_KEYWORDS = [
     "laravel", "react", "vue", "node", "django", "python", "software engineer",
     "software developer", "security", "cybersecurity", "cyber", "pentest", "devsecops",
 ]
-
-# ...and must NEVER contain any of these senior/unrelated keywords.
+# ...and on every site it must not contain any of these.
 SKIP_TITLE_WORDS = [
     "senior", "sr", "staff", "lead", "principal", "director", "head", "manager",
     "architect", "consultant", "expert", "chief", "vp", "cto", "founding",
     "sales", "marketing", "product owner", "ii", "iii", "iv", "guard",
 ]
 
-# Discord Badges (The new clean design)
 BADGES = {
     "reloc": "✈️ Relocation support",
     "visa": "🛂 Visa sponsorship",
     "remote": "🌍 Remote, open to Algeria",
+    "junior": "🎓 Junior-friendly",
 }
 
 # =====================================================================
-#  2) Core Logic & Filters
+#  2) Nothing below needs editing
 # =====================================================================
 
 STATE_FILE = Path(__file__).with_name("seen_jobs.json")
-UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
+UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) JobRadar/1.0"}
 
-TITLE_KEYWORDS_RE = re.compile(
-    r"\b(?:" + "|".join(re.escape(w) for w in TITLE_KEYWORDS) + r")\b", re.I)
-SKIP_TITLE_RE = re.compile(
-    r"\b(?:" + "|".join(re.escape(w) for w in SKIP_TITLE_WORDS) + r")\b", re.I)
 
-# Visa sponsorship signals (positive offers only)
+def words_re(words):
+    return re.compile(r"(?<!\w)(?:" + "|".join(re.escape(w) for w in words) + r")(?!\w)", re.I)
+
+
+TITLE_KEYWORDS_RE = words_re(TITLE_KEYWORDS)
+SKIP_TITLE_RE = words_re(SKIP_TITLE_WORDS)
+JUNIOR_RE = words_re(["junior", "entry level", "entry-level", "graduate", "intern",
+                      "internship", "trainee", "werkstudent", "working student",
+                      "early career", "new grad", "stagiaire", "débutant"])
+
+# --- visa / relocation: real offers only ---
 SPONSOR_RE = re.compile(
     r"\bvisa\s+sponsor\w*"
     r"|sponsor\w*(?:\s+(?:a|an|the|your|our|candidates?|work|employment)){0,3}\s+visas?"
@@ -104,8 +97,6 @@ SPONSOR_RE = re.compile(
     r"|blue\s+card(?:\s+(?:support|sponsorship|assistance|provided|offered))?"
     r"|sponsorship\s+(?:is\s+)?(?:available|provided|offered)"
     r"|\bvisum\b", re.I)
-
-# Relocation support signals (positive offers only)
 RELOC_RE = re.compile(
     r"relocation\s+(?:package|support|assistance|bonus|allowance|budget|help|expenses"
     r"|benefits?|stipend|services?|available|offered|provided|included|covered"
@@ -117,45 +108,30 @@ RELOC_RE = re.compile(
     r"|relocation\s+(?:and|&)\s+visa|visa\s+(?:and|&)\s+relocation"
     r"|umzugs\w*(?:hilfe|zuschuss|unterstützung|kosten)\w*"
     r"|relocation-?(?:paket|support)", re.I)
-
-# Negations & screening questions that must NOT trigger an offer
+# A sentence with a negation, a question mark (screening question) or "own expense"
+# is never treated as an offer.
 NEG_RE = re.compile(
-    r"\b(?:no|not|cannot|can\'?t|unable|without|never|neither|none|unfortunately"
-    r"|ineligible|unsupported|kein\w*|nicht|ohne|leider)\b"
-    r"|n[\'’]t\b"
-    r"|\bown\s+expense\b"
-    r"|\bnot\s+(?:available|provided|offered|possible|eligible|supported)\b"
-    r"|\b(?:do|will|would|if)\s+you\s+(?:now\s+or\s+in\s+the\s+future\s+)?(?:require|need)\b"
-    r"|\?", re.I)
+    r"\b(?:no|not|cannot|unable|without|never|neither|none|unfortunately|ineligible"
+    r"|kein\w*|nicht|ohne|leider)\b|n['’]t\b|\bown\s+expense\b|\?", re.I)
 
-# Locations acceptable for remote workers in Algeria
-OPEN_LOC_RE = re.compile(
-    r"\b(?:worldwide|anywhere|global|africa|algeria|mena|emea)\b", re.I)
-
-# Descriptions explicitly confirming worldwide / Algeria remote work
+# --- remote jobs that someone in Algeria can really take ---
+OPEN_LOC_RE = re.compile(r"\b(?:worldwide|anywhere|global|africa|algeria|mena|emea)\b", re.I)
 OPEN_DESC_RE = re.compile(
-    r"work\s+from\s+anywhere(?:\s+in\s+the\s+world)?"
-    r"|anywhere\s+in\s+the\s+world"
-    r"|remote\s+worldwide|worldwide\s+remote"
-    r"|100%\s+remote\s+(?:globally|worldwide)"
-    r"|(?:hiring|open\s+to\s+candidates?)\s+(?:globally|worldwide|in\s+africa|from\s+africa|in\s+algeria|in\s+mena)", re.I)
-
-# Country restrictions that make a remote job unavailable to Algeria
+    r"work\s+from\s+anywhere|anywhere\s+in\s+the\s+world|remote\s+worldwide"
+    r"|worldwide\s+remote|100%\s+remote\s+(?:globally|worldwide)"
+    r"|(?:hiring|open\s+to\s+candidates?)\s+(?:globally|worldwide|in\s+africa|from\s+africa"
+    r"|in\s+algeria|in\s+mena)", re.I)
 RESTRICT_RE = re.compile(
     r"must\s+(?:be\s+)?(?:located|based|reside|live)\s+in\s+(?!algeria|africa)"
-    r"|(?:authori[sz]ed|eligible|right)\s+to\s+work\s+in\s+(?:the\s+)?(?:us|u\.s\.|uk|eu|germany|netherlands|canada)"
-    r"|work\s+authori[sz]ation\s+(?:in|for)\s+(?:the\s+)?(?:us|u\.s\.|uk|eu|germany)"
-    r"|citizens?\s+only"
-    r"|security\s+clearance"
-    r"|\b(?:us|u\.s\.|uk|eu)\s+only\b"
+    r"|(?:authori[sz]ed|eligible|right)\s+to\s+work\s+in\s+(?:the\s+)?"
+    r"(?:us|u\.s\.|uk|eu|germany|netherlands|canada)\b"
+    r"|work\s+authori[sz]ation\s+(?:in|for)\s+(?:the\s+)?(?:us|u\.s\.|uk|eu|germany)\b"
+    r"|citizens?\s+only|security\s+clearance|\b(?:us|u\.s\.|uk|eu)\s+only\b"
     r"|based\s+in\s+the\s+(?:us|u\.s\.|uk|eu|united states|united kingdom)\b"
+    r"|\bremote\s+(?:within|in)\s+(?:the\s+)?(?:eu|europe|us|usa|u\.s\.|uk|germany"
+    r"|netherlands|france|canada)\b"
     r"|residence\s+in\s+(?:germany|uk|us|europe|the\s+eu)\b"
     r"|deutschkenntnisse|flie[ßs]end\s+deutsch|german\s+(?:c1|c2|fluent|native)", re.I)
-
-# Specific countries: if a job is in Germany/Netherlands/etc., it is NOT remote for Algeria
-# unless it explicitly offers visa/relocation.
-LOCAL_COUNTRY_RE = re.compile(
-    r"\b(?:germany|deutschland|netherlands|ireland|france|uk|united kingdom|england|scotland|wales|usa?|united states|canada|australia|switzerland|austria|spain|italy|poland|india|brazil|mexico|singapore)\b", re.I)
 
 EXP_RE = re.compile(
     r"(?:(\d{1,2})\s*(?:-|–|to|à)\s*)?(\d{1,2})\s*\+?\s*(?:years?|yrs?|jahre?n?|ans)\b"
@@ -163,16 +139,15 @@ EXP_RE = re.compile(
 
 
 def html_lines(markup):
-    """HTML -> text, one line per block, so sentences and negations stay separate."""
+    """HTML -> text, one line per block, so a negation stays in its own sentence."""
     return html.unescape(re.sub(r"<[^>]+>", "\n", markup or ""))
 
 
 def visa_signals(text):
-    """Returns set of {'visa', 'reloc'} for genuine offers found in un-negated sentences."""
+    """{'visa', 'reloc'} for offers found in sentences that are not negated."""
     found = set()
     for sentence in re.split(r"[.\n;!•]+", text):
-        sentence = sentence.strip()
-        if not sentence or NEG_RE.search(sentence):
+        if not sentence.strip() or NEG_RE.search(sentence):
             continue
         if SPONSOR_RE.search(sentence):
             found.add("visa")
@@ -182,59 +157,56 @@ def visa_signals(text):
 
 
 def too_experienced(markup):
-    """Drop jobs asking for more years of experience than MAX_YEARS_EXPERIENCE."""
-    if MAX_YEARS_EXPERIENCE >= 99:
-        return False
+    """True if the job asks for more years than MAX_YEARS_EXPERIENCE ('1-3 years' counts as 1)."""
     text = BeautifulSoup(markup or "", "html.parser").get_text(" ")
-    for m in EXP_RE.finditer(text):
-        yrs = int(m.group(2) or m.group(1))
-        if yrs > MAX_YEARS_EXPERIENCE:
-            return True
-    return False
+    return any(int(m.group(1) or m.group(2)) > MAX_YEARS_EXPERIENCE
+               for m in EXP_RE.finditer(text))
+
+
+def to_epoch(value):
+    """Unix seconds from seconds, milliseconds or an ISO date (None if unknown)."""
+    try:
+        if value in (None, ""):
+            return None
+        if isinstance(value, str) and not value.isdigit():
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        value = float(value)
+        return value / 1000 if value > 1e11 else value
+    except (ValueError, TypeError):
+        return None
 
 
 def make(source, id_, title, company, location, url, desc="", remote=False, posted=None):
-    return {
-        "id": f"{source}:{id_}",
-        "source": source,
-        "title": title.strip(),
-        "company": (company or "Unknown").strip(),
-        "location": (location or "").strip(),
-        "url": url,
-        "desc": desc or "",
-        "remote": remote,
-        "posted": posted,
-    }
+    return {"id": f"{source}:{id_}", "source": source, "title": title.strip(),
+            "company": (company or "Unknown").strip(), "location": (location or "").strip(),
+            "url": url, "desc": desc or "", "remote": remote, "posted": to_epoch(posted)}
 
 
 # ---------------------------- sources -------------------------------
 
 def fetch_linkedin():
-    """Searches LinkedIn for target roles in remote places and relocation countries."""
     base = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
     searches = ([(p, True) for p in REMOTE_PLACES]
                 + [(c, False) for c in RELOCATION_COUNTRIES])
     out = []
     for place, remote in searches:
         for role in ROLES:
-            query = role if remote else f"{role} visa"
-            params = {
-                "keywords": query,
-                "location": place,
-                "f_TPR": "r86400",
-            }
+            params = {"keywords": role if remote else f"{role} visa sponsorship",
+                      "location": place, "f_TPR": f"r{MAX_AGE_HOURS * 3600}"}
             if remote:
-                params["f_WT"] = 2  # LinkedIn Remote filter
+                params["f_WT"] = 2          # LinkedIn "Remote" filter
             try:
                 r = requests.get(base, headers=UA, params=params, timeout=20)
-                if r.status_code == 429:
-                    print("  linkedin is throttling us, stopping searches for this run")
-                    return out
+                if r.status_code == 429:    # throttled: wait once, then give up
+                    time.sleep(20)
+                    r = requests.get(base, headers=UA, params=params, timeout=20)
+                    if r.status_code == 429:
+                        print("  linkedin is throttling us, stopping its searches")
+                        return out
                 if r.status_code != 200:
                     print(f"  linkedin HTTP {r.status_code} for '{role}' in {place}")
                     continue
-                soup = BeautifulSoup(r.text, "html.parser")
-                for card in soup.select("li"):
+                for card in BeautifulSoup(r.text, "html.parser").select("li"):
                     a = card.select_one("a.base-card__full-link")
                     t = card.select_one(".base-search-card__title")
                     if not a or not t:
@@ -242,21 +214,17 @@ def fetch_linkedin():
                     c = card.select_one(".base-search-card__subtitle")
                     l = card.select_one(".job-search-card__location")
                     url = a["href"].split("?")[0]
-                    jid = url.rstrip("/").split("-")[-1]
-                    out.append(make(
-                        "LinkedIn", jid, t.get_text(),
-                        c.get_text() if c else "",
-                        l.get_text() if l else place,
-                        url, remote=remote,
-                    ))
+                    out.append(make("LinkedIn", url.rstrip("/").split("-")[-1],
+                                    t.get_text(), c.get_text() if c else "",
+                                    l.get_text() if l else place, url, remote=remote))
             except requests.RequestException as e:
-                print(f"  linkedin error for {role} in {place}: {type(e).__name__}")
-            time.sleep(2.0)
+                print(f"  linkedin error for '{role}' in {place}: {type(e).__name__}")
+            time.sleep(2.0)  # be polite
     return out
 
 
 def linkedin_description(jid):
-    """Job description HTML from LinkedIn public job page (None if missing/failed)."""
+    """Description HTML from LinkedIn's public job page (None if missing)."""
     r = requests.get(f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{jid}",
                      headers=UA, timeout=20)
     if r.status_code == 429:
@@ -269,190 +237,143 @@ def linkedin_description(jid):
     return str(box) if box else None
 
 
+def fetch_himalayas():
+    """Official Himalayas API. Empty locationRestrictions = open worldwide."""
+    out = []
+    for role in ROLES:
+        r = requests.get("https://himalayas.app/jobs/api/search", headers=UA, timeout=20,
+                         params={"q": role, "worldwide": "true", "sort": "recent"})
+        if r.status_code != 200:
+            print(f"  himalayas HTTP {r.status_code} for '{role}'")
+            continue
+        data = r.json()
+        for j in (data.get("jobs") or data.get("data") or []):
+            places = j.get("locationRestrictions") or []
+            link = j.get("applicationLink") or j.get("guid") or ""   # API terms: use this link
+            out.append(make("Himalayas", j.get("guid") or link, j.get("title", ""),
+                            j.get("companyName", ""), ", ".join(places) or "Worldwide",
+                            link, j.get("description") or j.get("excerpt", ""),
+                            remote=True, posted=j.get("pubDate")))
+        time.sleep(1.0)
+    return out
+
+
 def fetch_remoteok():
-    r = requests.get("https://remoteok.com/api", headers=UA, timeout=20)
-    if r.status_code != 200:
-        return []
-    data = r.json()
-    return [
-        make("RemoteOK", j["id"], j.get("position", ""), j.get("company"),
-             j.get("location"), j["url"], j.get("description", ""),
-             remote=True, posted=j.get("epoch"))
-        for j in data if isinstance(j, dict) and j.get("id")
-    ]
+    data = requests.get("https://remoteok.com/api", headers=UA, timeout=20).json()
+    # RemoteOK leaves the location empty when a job is open worldwide
+    return [make("RemoteOK", j["id"], j.get("position", ""), j.get("company"),
+                 j.get("location") or "Worldwide", j["url"], j.get("description", ""),
+                 remote=True, posted=j.get("epoch"))
+            for j in data if isinstance(j, dict) and j.get("id")]
 
 
 def fetch_weworkremotely():
     out = []
-    categories = (
-        "remote-programming-jobs",
-        "remote-full-stack-programming-jobs",
-        "remote-front-end-programming-jobs",
-        "remote-back-end-programming-jobs",
-        "remote-data-jobs",
-        "remote-devops-sysadmin-jobs",
-    )
-    for slug in categories:
-        try:
-            feed = feedparser.parse(f"https://weworkremotely.com/categories/{slug}.rss")
-            for e in feed.entries:
-                company, _, title = e.title.partition(": ")
-                posted = calendar.timegm(e.published_parsed) if e.get("published_parsed") else None
-                out.append(make(
-                    "WeWorkRemotely", e.link, title or e.title,
-                    company if title else "", e.get("region", ""), e.link,
-                    e.get("summary", ""), remote=True, posted=posted,
-                ))
-        except Exception as e:
-            print(f"  weworkremotely {slug} error: {type(e).__name__}")
+    for slug in ("remote-programming-jobs", "remote-full-stack-programming-jobs",
+                 "remote-front-end-programming-jobs", "remote-back-end-programming-jobs",
+                 "remote-data-jobs", "remote-devops-sysadmin-jobs"):
+        for e in feedparser.parse(f"https://weworkremotely.com/categories/{slug}.rss").entries:
+            company, _, title = e.title.partition(": ")      # "Company: Job title"
+            posted = calendar.timegm(e.published_parsed) if e.get("published_parsed") else None
+            out.append(make("WeWorkRemotely", e.link, title or e.title,
+                            company if title else "", e.get("region", ""), e.link,
+                            e.get("summary", ""), remote=True, posted=posted))
     return out
-
-
-def fetch_remotive():
-    try:
-        r = requests.get("https://remotive.com/api/remote-jobs", headers=UA, timeout=20)
-        if r.status_code != 200:
-            return []
-        data = r.json().get("jobs", [])
-        return [
-            make("Remotive", str(j["id"]), j.get("title", ""), j.get("company_name", ""),
-                 j.get("candidate_required_location") or "Worldwide", j.get("url", ""),
-                 j.get("description", ""), remote=True,
-                 posted=j.get("publication_date"))
-            for j in data if isinstance(j, dict) and j.get("id")
-        ]
-    except Exception as e:
-        print(f"  remotive error: {type(e).__name__}")
-        return []
 
 
 def fetch_arbeitnow():
-    r = requests.get("https://www.arbeitnow.com/api/job-board-api",
-                     headers=UA, timeout=20)
-    if r.status_code != 200:
-        return []
-    data = r.json().get("data", [])
-    out = []
-    for j in data:
-        if not isinstance(j, dict) or not j.get("slug"):
-            continue
-        out.append(make(
-            "Arbeitnow", j["slug"], j.get("title", ""), j.get("company_name", ""),
-            j.get("location") or ("Remote" if j.get("remote") else ""),
-            j.get("url", ""), j.get("description", ""),
-            remote=bool(j.get("remote")),
-            posted=j.get("created_at"),
-        ))
-    return out
+    data = requests.get("https://www.arbeitnow.com/api/job-board-api",
+                        headers=UA, timeout=20).json().get("data", [])
+    return [make("Arbeitnow", j["slug"], j.get("title", ""), j.get("company_name"),
+                 j.get("location") or ("Remote" if j.get("remote") else ""), j.get("url", ""),
+                 j.get("description", ""), remote=bool(j.get("remote")),
+                 posted=j.get("created_at"))
+            for j in data if isinstance(j, dict) and j.get("slug")]
 
 
-SOURCES = {
-    "linkedin": fetch_linkedin,
-    "weworkremotely": fetch_weworkremotely,
-    "remotive": fetch_remotive,
-    "remoteok": fetch_remoteok,
-    "arbeitnow": fetch_arbeitnow,
-}
+SOURCES = {"himalayas": fetch_himalayas, "remoteok": fetch_remoteok,
+           "weworkremotely": fetch_weworkremotely, "arbeitnow": fetch_arbeitnow,
+           "linkedin": fetch_linkedin}
 
 
 # ---------------------------- logic ---------------------------------
 
 def title_ok(j):
-    title = j["title"]
-    if SKIP_TITLE_RE.search(title):
+    if SKIP_TITLE_RE.search(j["title"]):
         return False
-    # LinkedIn queries are already role-specific; other boards must match title keywords
-    return j["source"] == "LinkedIn" or bool(TITLE_KEYWORDS_RE.search(title))
+    return j["source"] == "LinkedIn" or bool(TITLE_KEYWORDS_RE.search(j["title"]))
 
 
 def fresh(j):
-    if not j.get("posted"):
-        return True
-    try:
-        val = j["posted"]
-        if isinstance(val, (int, float)):
-            ts = float(val)
-        elif isinstance(val, str) and val.isdigit():
-            ts = float(val)
-        else:
-            from datetime import datetime
-            ts = datetime.fromisoformat(str(val).replace("Z", "+00:00")).timestamp()
-        return time.time() - ts <= MAX_AGE_HOURS * 3600
-    except Exception:
-        return True
+    return not j["posted"] or time.time() - j["posted"] <= MAX_AGE_HOURS * 3600
 
 
 def qualifies(j):
-    """
-    Quality check: keep a job ONLY if:
-      1) Description explicitly offers visa sponsorship or relocation support; OR
-      2) It is remote and genuinely open to someone living in Algeria.
-    Jobs remote *only within another country* (e.g. Germany) are dropped unless
-    they offer visa or relocation.
-    """
+    """Visa/relocation offered, or remote AND open to Algeria. Sets j['flags']."""
     text = html_lines(j["desc"])
     flags = visa_signals(text)
-
     loc = j["location"]
-    is_foreign_country = bool(LOCAL_COUNTRY_RE.search(loc)) and not bool(OPEN_LOC_RE.search(loc))
-
-    if j["remote"] and not is_foreign_country:
-        is_open_location = bool(OPEN_LOC_RE.search(loc)) or loc.lower().strip() in ("remote", "worldwide", "")
-        is_open_desc = bool(OPEN_DESC_RE.search(text))
-        is_restricted = bool(RESTRICT_RE.search(text)) or bool(RESTRICT_RE.search(loc))
-
-        if (is_open_location or is_open_desc) and not is_restricted:
-            flags.add("remote")
-
-    j["flags"] = flags
-    return bool(flags)
+    if (j["remote"] and (OPEN_LOC_RE.search(loc) or OPEN_DESC_RE.search(text))
+            and not RESTRICT_RE.search(text) and not RESTRICT_RE.search(loc)):
+        flags.add("remote")
+    if flags and JUNIOR_RE.search(f"{j['title']} {text}"):
+        flags.add("junior")
+    j["flags"] = sorted(flags)
+    return bool(flags & {"visa", "reloc", "remote"})
 
 
 def score(j):
     f = j["flags"]
-    return 3 * ("reloc" in f) + 2 * ("visa" in f) + ("remote" in f)
+    return 3 * ("reloc" in f) + 2 * ("visa" in f) + ("remote" in f) + ("junior" in f)
 
 
-def load_seen():
+def load_state():
     if STATE_FILE.exists():
         try:
             data = json.loads(STATE_FILE.read_text())
             if isinstance(data, dict):
-                return set(data.get("seen", []))
+                return {"seen": data.get("seen", []), "waiting": data.get("waiting", [])}
             if isinstance(data, list):
-                return set(data)
-        except Exception:
-            return set()
-    return set()
+                return {"seen": data, "waiting": []}
+        except ValueError:
+            pass
+    return {"seen": [], "waiting": []}
 
 
-def save_seen(seen):
-    STATE_FILE.write_text(json.dumps({"seen": list(seen)[-5000:]}))
+def save_state(seen_list, new_ids, waiting):
+    seen_list = seen_list + [i for i in new_ids if i not in set(seen_list)]
+    STATE_FILE.write_text(json.dumps({"seen": seen_list[-5000:], "waiting": waiting}))
 
 
 def post(j):
-    badge_order = ("reloc", "visa", "remote")
-    badges = " · ".join(BADGES[f] for f in badge_order if f in j["flags"])
+    badges = " · ".join(BADGES[f] for f in BADGES if f in j["flags"])
     msg = (f"**{j['title']}**\n"
            f"🏢 {j['company']}  ·  📍 {j['location'] or 'Not specified'}  ·  _{j['source']}_\n"
-           f"{badges}\n"
-           f"{j['url']}")
+           f"{badges}\n{j['url']}")
     while True:
         r = requests.post(DISCORD_WEBHOOK_URL, timeout=15,
                           json={"content": msg, "username": "Job Radar"})
         if r.status_code == 429:
-            retry_after = float(r.json().get("retry_after", 2))
-            time.sleep(retry_after + 0.5)
+            time.sleep(float(r.json().get("retry_after", 2)) + 0.5)
             continue
         r.raise_for_status()
         return
 
 
-def run_once():
-    seen = load_seen()
-    print(f"Loaded {len(seen)} previously seen jobs.")
+def linkedin_newest_first(j):
+    try:
+        return -int(j["id"].split(":", 1)[1])      # LinkedIn ids grow over time
+    except ValueError:
+        return 0
 
-    # 1) Collect jobs from all sources
+
+def run_once():
+    state = load_state()
+    seen, now = set(state["seen"]), time.time()
+    # jobs that qualified earlier but did not fit in the last post: keep while still fresh
+    waiting = [w for w in state["waiting"] if now - w["found_at"] <= MAX_AGE_HOURS * 3600]
+
+    # 1) collect
     jobs = []
     for name, fn in SOURCES.items():
         try:
@@ -460,62 +381,63 @@ def run_once():
             print(f"[{name}] {len(items)} fetched")
             jobs += items
         except Exception as e:
-            print(f"[{name}] failed: {type(e).__name__} - {e}")
+            print(f"[{name}] failed: {type(e).__name__}")
 
-    # 2) Cheap initial checks: not seen, good title, recently posted
+    # 2) cheap checks: new, good title, recent. LinkedIn newest first.
     candidates, ids = [], set()
     for j in jobs:
         if j["id"] in seen or j["id"] in ids or not title_ok(j) or not fresh(j):
             continue
         ids.add(j["id"])
         candidates.append(j)
-    print(f"Candidates to inspect after title & freshness filters: {len(candidates)}")
+    candidates.sort(key=lambda j: linkedin_newest_first(j) if j["source"] == "LinkedIn" else 0)
 
-    # 3) Quality check (LinkedIn opens job detail pages; others already have desc)
+    # 3) quality check (LinkedIn needs its job page opened to read the description)
     done, good, opened = set(), [], 0
     for j in candidates:
         if j["source"] == "LinkedIn":
             if opened >= LINKEDIN_DETAIL_LIMIT:
-                continue  # not marked done -> will be checked on next run
+                continue                       # not marked done: checked on a later run
             opened += 1
             try:
                 desc = linkedin_description(j["id"].split(":", 1)[1])
             except (RuntimeError, requests.RequestException) as e:
-                print("  linkedin detail fetching stopped:", type(e).__name__)
+                print("  linkedin job pages stopped:", type(e).__name__)
                 opened = LINKEDIN_DETAIL_LIMIT
                 continue
             time.sleep(1.5)
-            if desc is None:
-                continue
-            j["desc"] = desc
-
-        done.add(j["id"])  # evaluated: marked as processed
+            j["desc"] = desc or ""
+        done.add(j["id"])                      # checked once, never again
         if not too_experienced(j["desc"]) and qualifies(j):
-            good.append(j)
+            j["found_at"] = now
+            good.append({k: j[k] for k in
+                         ("id", "source", "title", "company", "location", "url",
+                          "flags", "found_at")})
 
-    print(f"Jobs passing quality filters (relocation/visa or remote Algeria): {len(good)}")
+    # 4) newest first, best first inside the same run
+    queue = waiting + good
+    queue.sort(key=score, reverse=True)
+    queue.sort(key=lambda j: j["found_at"], reverse=True)
+    print(f"{len(candidates)} new candidates, {len(good)} passed the quality check, "
+          f"{len(waiting)} already waiting")
 
-    # 4) Post the best candidates to Discord
-    good.sort(key=score, reverse=True)
-    to_post = good[:MAX_POSTS_PER_RUN]
-    posted = 0
-    for j in to_post:
+    posted, left = 0, queue[MAX_POSTS_PER_RUN:]
+    for j in queue[:MAX_POSTS_PER_RUN]:
         try:
             post(j)
             posted += 1
-            print(f"  [DISCORD POSTED] {j['title']} @ {j['company']} ({', '.join(j['flags'])})")
+            print(f"  posted: {j['title']} @ {j['company']} {j['flags']}")
             time.sleep(1)
         except requests.RequestException as e:
-            code = getattr(e.response, "status_code", None)
-            print(f"  [DISCORD ERROR] {code or type(e).__name__} posting {j['title']}")
-            done.discard(j["id"])  # retry failed Discord post next run
-
-    save_seen(seen | done)
-    print(f"Done. Evaluated {len(candidates)} new candidates, {len(good)} passed quality check, {posted} posted to Discord.")
+            code = getattr(e.response, "status_code", None)    # never print the URL
+            print("  Discord error:", code or type(e).__name__)
+            left.append(j)                                      # retry next run
+    save_state(state["seen"], done, left)
+    print(f"Done. {posted} posted, {len(left)} waiting for the next run.")
 
 
 def send_test():
-    """python job_radar.py --test -> sends one message and reports the result."""
+    """python job_radar.py --test  ->  sends one message and reports the result."""
     try:
         r = requests.post(DISCORD_WEBHOOK_URL, timeout=15,
                           json={"content": "✅ Job Radar test message",
@@ -537,5 +459,4 @@ if __name__ == "__main__":
     else:
         while True:
             run_once()
-            time.sleep(30 * 60)
             time.sleep(30 * 60)
