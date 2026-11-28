@@ -33,13 +33,13 @@ jobs:
 
       - name: Send a test message
         if: ${{ inputs.test }}
-        run: python job_radar.py --test
+        run: python -m job_radar --test
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
       - name: Look for jobs
         if: ${{ !inputs.test }}
-        run: python job_radar.py --once
+        run: python -m job_radar --once
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
@@ -48,7 +48,7 @@ jobs:
         run: |
           git config user.name "job-radar"
           git config user.email "job-radar@users.noreply.github.com"
-          git add seen_jobs.json
+          git add state/
           git diff --cached --quiet || git commit -m "update seen jobs"
           git pull --rebase
           git push
